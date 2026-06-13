@@ -236,7 +236,14 @@ function previewDoc(html: string): string {
   //   iframe → parent: { source:'hf-preview', type:'time'|'meta', t, duration }
   const harness = `
     window.__timelines = window.__timelines || {};
-    var tls = [], playhead = 0, playing = true, duration = 5, last = 0;
+    // ?start / ?end define a loop window (a selected clip's span); ?play=1 autoplays.
+    // Default (no params) is paused on the whole composition.
+    var params = new URLSearchParams(location.search);
+    var startAt = parseFloat(params.get('start') || '0') || 0;
+    var endParam = parseFloat(params.get('end') || '');
+    var seekParam = parseFloat(params.get('seek') || '');
+    var loopStart = startAt, loopEnd = isFinite(endParam) ? endParam : Infinity;
+    var tls = [], playhead = startAt, playing = params.get('play') === '1', duration = 5, last = 0;
     function clipDuration() {
       var max = 0;
       document.querySelectorAll('.clip').forEach(function (el) {
@@ -252,6 +259,13 @@ function previewDoc(html: string): string {
       if (m.type === 'seek') { playing = false; playhead = Math.max(0, Math.min(m.t, duration)); }
       else if (m.type === 'play') { playing = true; }
       else if (m.type === 'pause') { playing = false; }
+      else if (m.type === 'window') {
+        loopStart = Math.max(0, m.start || 0);
+        loopEnd = (m.end == null) ? duration : Math.min(m.end, duration);
+        if (loopStart >= loopEnd) loopStart = 0;
+        // Do NOT move the playhead — selecting a clip you can already see
+        // shouldn't jump the time. (Reload restores time via a 'seek' message.)
+      }
     });
     addEventListener('load', function () {
       var root = document.querySelector('[data-composition-id]');
@@ -266,6 +280,17 @@ function previewDoc(html: string): string {
       tls.forEach(function (tl) { try { tl.pause(0); } catch (e) {} });
       var tlMax = tls.reduce(function (a, tl) { try { return Math.max(a, tl.duration()); } catch (e) { return a; } }, 0);
       duration = Math.max(clipDuration(), tlMax, 0.1);
+      if (!isFinite(loopEnd) || loopEnd > duration) loopEnd = duration;
+      if (loopStart >= loopEnd) loopStart = 0;
+      playhead = isFinite(seekParam) ? Math.max(loopStart, Math.min(seekParam, loopEnd)) : loopStart;
+      // Click a clip in the preview to select it for editing.
+      document.querySelectorAll('.clip').forEach(function (el, i) {
+        el.style.cursor = 'pointer';
+        el.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          parent.postMessage({ source: 'hf-preview', type: 'select', index: i }, '*');
+        });
+      });
       parent.postMessage({ source: 'hf-preview', type: 'meta', duration: duration }, '*');
       last = performance.now();
       requestAnimationFrame(tick);
@@ -273,14 +298,18 @@ function previewDoc(html: string): string {
     function tick(now) {
       requestAnimationFrame(tick);
       var dt = (now - last) / 1000; last = now;
-      if (playing) { playhead += dt; if (playhead > duration) playhead = 0; }
+      if (playing) { playhead += dt; if (playhead > loopEnd) playhead = loopStart; }
       tls.forEach(function (tl) { try { tl.time(Math.min(playhead, tl.duration())); } catch (e) {} });
       parent.postMessage({ source: 'hf-preview', type: 'time', t: playhead, duration: duration }, '*');
     }`;
+  // Media is referenced as a relative `assets/<key>` path (what the renderer
+  // needs, since it writes files into the project's assets/ dir). The preview
+  // iframe has no such dir, so rewrite those references to the served R2 URL.
+  const rewritten = html.replace(/(["'(])assets\//g, "$1/api/uploads/");
   return `<!doctype html><html><head><meta charset="utf-8" />
 <style>html,body{margin:0;padding:0;background:#000;overflow:hidden}</style>
 </head><body>
-${html}
+${rewritten}
 <script>${harness}</script>
 </body></html>`;
 }

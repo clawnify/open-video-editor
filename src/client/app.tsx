@@ -70,35 +70,41 @@ const api = {
 
 // ── app ──────────────────────────────────────────────────────────────
 
-// Starter composition for "New" — a title reveal with two clips on track 0 and
-// a GSAP timeline, so the preview and timeline aren't empty. Lives here as a
-// string (not a DB seed) so it goes in via the normal parameterized insert.
+// Starter composition for "New" — three clips on three separate tracks with a
+// staggered GSAP timeline, so the timeline view shows real track registration.
+// Lives here as a string (not a DB seed) so it goes in via the normal
+// parameterized insert.
 const STARTER_HTML = `<div id="root" data-composition-id="untitled" data-start="0" data-width="1920" data-height="1080"
      style="width:1920px;height:1080px;background:#0b1020;position:relative;overflow:hidden;font-family:Inter,system-ui,sans-serif">
-  <div id="title" class="clip" data-start="0" data-duration="5" data-track-index="0"
-       style="position:absolute;top:46%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:96px;font-weight:800;letter-spacing:-2px;text-align:center;white-space:nowrap">
+  <div id="kicker" class="clip" data-start="0" data-duration="5" data-track-index="2"
+       style="position:absolute;top:34%;left:50%;transform:translate(-50%,-50%);color:#7c8cff;font-size:28px;font-weight:700;letter-spacing:4px;text-transform:uppercase;white-space:nowrap">
+    Product Launch
+  </div>
+  <div id="title" class="clip" data-start="0.3" data-duration="4.7" data-track-index="1"
+       style="position:absolute;top:48%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:96px;font-weight:800;letter-spacing:-2px;text-align:center;white-space:nowrap">
     Your Title Here
   </div>
-  <div id="sub" class="clip" data-start="0" data-duration="5" data-track-index="0"
-       style="position:absolute;top:58%;left:50%;transform:translate(-50%,-50%);color:#7c8cff;font-size:36px;font-weight:500;text-align:center;white-space:nowrap">
+  <div id="sub" class="clip" data-start="0.9" data-duration="4.1" data-track-index="0"
+       style="position:absolute;top:60%;left:50%;transform:translate(-50%,-50%);color:#9aa6d6;font-size:34px;font-weight:500;text-align:center;white-space:nowrap">
     A subtitle that fades in
   </div>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
   <script>
     const tl = gsap.timeline({ paused: true });
-    tl.from("#title", { opacity: 0, y: 50, duration: 1 }, 0.3);
-    tl.from("#sub", { opacity: 0, y: 30, duration: 0.8 }, 0.9);
+    tl.from("#kicker", { opacity: 0, y: -20, duration: 0.6 }, 0)
+      .from("#title", { opacity: 0, y: 50, duration: 1 }, 0.3)
+      .from("#sub", { opacity: 0, y: 30, duration: 0.8 }, 0.9);
     window.__timelines = window.__timelines || {};
     window.__timelines["untitled"] = tl;
   </script>
 </div>`;
 
-type Tab = "compose" | "media" | "renders";
+type Tab = "compose" | "timeline" | "media" | "renders";
 
 export function App() {
   const [comps, setComps] = useState<Composition[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("compose");
+  const [tab, setTab] = useState<Tab>("timeline");
 
   const active = comps.find((c) => c.id === activeId) || null;
 
@@ -191,26 +197,49 @@ function Editor({
   const [previewKey, setPreviewKey] = useState(0);
   const [saving, setSaving] = useState(false);
 
+  // Selected clip (by index) for the right-side inspector.
+  const [selectedClip, setSelectedClip] = useState<number | null>(null);
+
   // Playhead state, kept in sync with the preview iframe's master clock.
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [playing, setPlaying] = useState(true);
+  const [playing, setPlaying] = useState(false); // default paused
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(5);
+
+  // Refs so the (stable) message handler can re-apply state after an iframe reload.
+  const timeRef = useRef(0);
+  const winRef = useRef<{ start: number; end: number | null } | null>(null);
+  const restoreRef = useRef<number | null>(null);
+
+  function post(msg: Record<string, unknown>) {
+    iframeRef.current?.contentWindow?.postMessage({ target: "hf-preview", ...msg }, "*");
+  }
 
   useEffect(() => {
     function onMsg(e: MessageEvent) {
       const m = e.data;
       if (!m || m.source !== "hf-preview") return;
       if (typeof m.duration === "number") setDuration(m.duration);
-      if (m.type === "time" && typeof m.t === "number") setTime(m.t);
+      if (m.type === "time" && typeof m.t === "number") {
+        setTime(m.t);
+        timeRef.current = m.t;
+      }
+      if (m.type === "select" && typeof m.index === "number") setSelectedClip(m.index); // clicked in the video
+      if (m.type === "meta") {
+        // iframe (re)loaded — re-apply the loop window and restore the playhead.
+        const w = winRef.current;
+        post({ type: "window", start: w ? w.start : 0, end: w ? w.end : null });
+        if (restoreRef.current != null) {
+          post({ type: "seek", t: restoreRef.current });
+          restoreRef.current = null;
+        }
+      }
     }
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function post(msg: Record<string, unknown>) {
-    iframeRef.current?.contentWindow?.postMessage({ target: "hf-preview", ...msg }, "*");
-  }
   function seek(t: number) {
     setPlaying(false);
     setTime(t);
@@ -222,12 +251,50 @@ function Editor({
     post({ type: next ? "play" : "pause" });
   }
 
+  // The selected clip defines a loop window the preview loops within. Selecting
+  // a clip only sets the window — it never moves the playhead (you clicked
+  // something you can already see) and never auto-plays.
+  const clips = parseClips(html).clips;
+  const selClip = selectedClip != null ? clips.find((c) => c.index === selectedClip) ?? null : null;
+
+  useEffect(() => {
+    winRef.current = selClip ? { start: selClip.start, end: selClip.start + selClip.duration } : null;
+    const w = winRef.current;
+    post({ type: "window", start: w ? w.start : 0, end: w ? w.end : null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClip]);
+
+  // Spacebar toggles play/pause (unless typing in a field).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.code !== "Space") return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      e.preventDefault();
+      togglePlay();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing]);
+
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  function updateClip(index: number, patch: ClipPatch) {
+    setHtml((h) => applyClipPatch(h, index, patch));
+    // Debounce the preview reload so typing stays smooth; restore the current
+    // playhead afterwards so an edit doesn't jump the time either.
+    clearTimeout(reloadTimer.current);
+    reloadTimer.current = setTimeout(() => {
+      restoreRef.current = timeRef.current;
+      setPreviewKey((k) => k + 1);
+    }, 350);
+  }
+
   async function save() {
     setSaving(true);
     try {
       await api.send("PUT", `/api/compositions/${comp.id}`, { name, html, fps });
       setPreviewKey((k) => k + 1); // reload iframe
-      setPlaying(true);
       setTime(0);
       onChange();
     } finally {
@@ -241,36 +308,48 @@ function Editor({
     onChange();
   }
 
+  const { w: vidW, h: vidH } = parseDims(html);
+
   return (
     <main className="flex-1 flex flex-col min-w-0 bg-neutral-50">
-      {/* preview */}
-      <div className="p-5 pb-0">
-        <div className="aspect-video w-full max-h-[38vh] mx-auto bg-black rounded-xl overflow-hidden border border-neutral-200">
-          <iframe
-            ref={iframeRef}
-            key={previewKey}
-            src={`/api/compositions/${comp.id}/preview`}
-            className="w-full h-full"
-            title="preview"
-          />
+      {/* preview (left) + clip inspector (right) — Remotion-style */}
+      <div className="flex border-b border-neutral-200">
+        <div className="flex-1 min-w-0 p-5">
+          {/* box matches the composition's own aspect ratio (no letterbox) */}
+          <div className="flex justify-center" style={{ height: "42vh" }}>
+            <div
+              className="bg-black rounded-xl overflow-hidden border border-neutral-200"
+              style={{ aspectRatio: `${vidW} / ${vidH}`, height: "100%", maxWidth: "100%" }}
+            >
+              <iframe
+                ref={iframeRef}
+                key={previewKey}
+                src={`/api/compositions/${comp.id}/preview`}
+                className="w-full h-full"
+                title="preview"
+              />
+            </div>
+          </div>
         </div>
-      </div>
-
-      {/* timeline */}
-      <div className="px-5 pt-3">
-        <Timeline
-          html={html}
-          time={time}
-          duration={duration}
-          playing={playing}
-          onSeek={seek}
-          onTogglePlay={togglePlay}
-        />
+        <aside className="w-72 shrink-0 border-l border-neutral-200 bg-white overflow-y-auto">
+          {selClip ? (
+            <Inspector
+              key={selClip.index}
+              clip={selClip}
+              onChange={(p) => updateClip(selClip.index, p)}
+              onClose={() => setSelectedClip(null)}
+            />
+          ) : (
+            <div className="p-4 text-sm text-neutral-500">
+              Select a clip — in the timeline or the video — to edit it.
+            </div>
+          )}
+        </aside>
       </div>
 
       {/* tabs */}
       <div className="flex items-center gap-1 px-5 pt-4">
-        {(["compose", "media", "renders"] as Tab[]).map((t) => (
+        {(["timeline", "compose", "media", "renders"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -330,6 +409,19 @@ function Editor({
           </div>
         )}
 
+        {tab === "timeline" && (
+          <Timeline
+            html={html}
+            fps={fps}
+            time={time}
+            duration={duration}
+            playing={playing}
+            selected={selectedClip}
+            onSelect={setSelectedClip}
+            onSeek={seek}
+            onTogglePlay={togglePlay}
+          />
+        )}
         {tab === "media" && <MediaPanel />}
         {tab === "renders" && <RendersPanel comp={comp} />}
       </div>
@@ -341,11 +433,16 @@ function Editor({
 
 type ClipType = "video" | "image" | "text" | "audio";
 interface Clip {
+  index: number; // position among .clip elements — stable handle for editing
   start: number;
   duration: number;
   track: number;
   type: ClipType;
   label: string;
+  text: string;
+  color: string;
+  fontSize: string;
+  src: string;
 }
 
 /** Parse HyperFrames `.clip` elements out of the composition HTML into tracks. */
@@ -354,19 +451,23 @@ function parseClips(html: string): { clips: Clip[]; tracks: number } {
   let tracks = 1;
   try {
     const doc = new DOMParser().parseFromString(html, "text/html");
-    clips = Array.from(doc.querySelectorAll(".clip")).map((el) => {
+    clips = Array.from(doc.querySelectorAll(".clip")).map((el, index) => {
       const tag = el.tagName.toLowerCase();
       const type: ClipType =
         tag === "video" ? "video" : tag === "img" ? "image" : tag === "audio" ? "audio" : "text";
-      const label =
-        (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 28) ||
-        type[0].toUpperCase() + type.slice(1);
+      const text = (el.textContent || "").trim().replace(/\s+/g, " ");
+      const label = text.slice(0, 28) || type[0].toUpperCase() + type.slice(1);
       return {
+        index,
         start: parseFloat(el.getAttribute("data-start") || "0") || 0,
         duration: parseFloat(el.getAttribute("data-duration") || "0") || 0,
         track: parseInt(el.getAttribute("data-track-index") || "0", 10) || 0,
         type,
         label,
+        text,
+        color: (el as HTMLElement).style?.color || "",
+        fontSize: (el as HTMLElement).style?.fontSize || "",
+        src: el.getAttribute("src") || "",
       };
     });
     tracks = Math.max(1, ...clips.map((c) => c.track + 1));
@@ -376,11 +477,61 @@ function parseClips(html: string): { clips: Clip[]; tracks: number } {
   return { clips, tracks };
 }
 
+/** Read the composition canvas size from the root element's data-* attributes. */
+function parseDims(html: string): { w: number; h: number } {
+  try {
+    const root = new DOMParser().parseFromString(html, "text/html").querySelector("[data-composition-id]");
+    return {
+      w: parseInt(root?.getAttribute("data-width") || "1920", 10) || 1920,
+      h: parseInt(root?.getAttribute("data-height") || "1080", 10) || 1080,
+    };
+  } catch {
+    return { w: 1920, h: 1080 };
+  }
+}
+
+export type ClipPatch = Partial<{
+  text: string;
+  color: string;
+  fontSize: string;
+  src: string;
+  start: number;
+  duration: number;
+  track: number;
+}>;
+
+/** Apply an inspector edit to clip #index by round-tripping the HTML through the DOM. */
+function applyClipPatch(html: string, index: number, patch: ClipPatch): string {
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const root = doc.querySelector("[data-composition-id]");
+    const el = doc.querySelectorAll(".clip")[index] as HTMLElement | undefined;
+    if (!root || !el) return html;
+    if (patch.text !== undefined) el.textContent = patch.text;
+    if (patch.color !== undefined) el.style.color = patch.color;
+    if (patch.fontSize !== undefined) el.style.fontSize = patch.fontSize;
+    if (patch.src !== undefined) el.setAttribute("src", patch.src);
+    if (patch.start !== undefined) el.setAttribute("data-start", String(patch.start));
+    if (patch.duration !== undefined) el.setAttribute("data-duration", String(patch.duration));
+    if (patch.track !== undefined) el.setAttribute("data-track-index", String(patch.track));
+    return root.outerHTML;
+  } catch {
+    return html;
+  }
+}
+
 const CLIP_BAR: Record<ClipType, string> = {
-  video: "bg-blue-600/90 border-blue-400",
-  image: "bg-emerald-700/90 border-emerald-500",
-  text: "bg-violet-500/90 border-violet-300",
-  audio: "bg-amber-600/90 border-amber-400",
+  video: "bg-blue-500",
+  image: "bg-emerald-500",
+  text: "bg-violet-500",
+  audio: "bg-amber-500",
+};
+// Selection ring matches the clip's own colour (offset gives a white gap so it reads).
+const CLIP_RING: Record<ClipType, string> = {
+  video: "ring-blue-600",
+  image: "ring-emerald-600",
+  text: "ring-violet-600",
+  audio: "ring-amber-600",
 };
 function clipIcon(type: ClipType) {
   const c = "w-3.5 h-3.5 shrink-0";
@@ -389,20 +540,35 @@ function clipIcon(type: ClipType) {
   if (type === "audio") return <Music className={c} />;
   return <TypeIcon className={c} />;
 }
-const fmtTime = (s: number) => `00:${String(Math.round(s)).padStart(2, "0")}`;
+/** Frame timecode MM:SS.FF (Remotion-style). */
+function fmtTC(t: number, fps: number) {
+  const total = Math.max(0, t);
+  const m = Math.floor(total / 60);
+  const s = Math.floor(total % 60);
+  let f = Math.round((total - Math.floor(total)) * fps);
+  if (f >= fps) f = fps - 1;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(m)}:${p(s)}.${p(f)}`;
+}
 
 function Timeline({
   html,
+  fps,
   time,
   duration,
   playing,
+  selected,
+  onSelect,
   onSeek,
   onTogglePlay,
 }: {
   html: string;
+  fps: number;
   time: number;
   duration: number;
   playing: boolean;
+  selected: number | null;
+  onSelect: (index: number) => void;
   onSeek: (t: number) => void;
   onTogglePlay: () => void;
 }) {
@@ -430,50 +596,57 @@ function Timeline({
   }
 
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-900 text-neutral-200 overflow-hidden select-none">
-      <div className="flex items-center gap-3 px-3 h-10 border-b border-neutral-800">
+    <div className="rounded-xl border border-neutral-200 bg-white text-neutral-800 overflow-hidden select-none">
+      {/* controls bar */}
+      <div className="flex items-center justify-center px-3 h-9 border-b border-neutral-200">
         <button
           onClick={onTogglePlay}
-          className="grid place-items-center w-7 h-7 rounded-md bg-neutral-800 hover:bg-neutral-700"
+          className="grid place-items-center w-7 h-7 rounded-md bg-neutral-100 hover:bg-neutral-200 text-neutral-700"
           title={playing ? "Pause" : "Play"}
         >
           {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
         </button>
-        <span className="text-xs tabular-nums text-neutral-400">
-          {time.toFixed(2)}s / {dur.toFixed(2)}s
-        </span>
       </div>
 
       <div className="flex">
-        <div className="shrink-0 border-r border-neutral-800 w-28">
-          <div className="h-7 border-b border-neutral-800" />
+        <div className="shrink-0 border-r border-neutral-200 w-28">
+          {/* current-time readout in the corner (Remotion-style) */}
+          <div className="h-7 flex items-center px-3 border-b border-neutral-200 font-semibold tabular-nums text-sm">
+            {fmtTC(time, fps)}
+          </div>
           {rows.map((tr) => (
             <div
               key={tr}
-              className="h-10 flex items-center px-3 text-xs text-neutral-400 border-b border-neutral-800/60"
+              className="h-10 flex items-center px-3 text-xs text-neutral-500 border-b border-neutral-100"
             >
               Track {tr + 1}
             </div>
           ))}
         </div>
 
-        <div className="relative flex-1 cursor-pointer" ref={areaRef} onPointerDown={onPointerDown}>
-          <div className="relative h-7 border-b border-neutral-800">
+        <div className="relative flex-1 cursor-pointer bg-neutral-50" ref={areaRef} onPointerDown={onPointerDown}>
+          <div className="relative h-7 border-b border-neutral-200">
             {ticks.map((s) => (
-              <div key={s} className="absolute top-0 h-full border-l border-neutral-800" style={{ left: pct(s) }}>
-                <span className="absolute left-1 top-1 text-[10px] text-neutral-500">{fmtTime(s)}</span>
+              <div key={s} className="absolute top-0 h-full border-l border-neutral-200" style={{ left: pct(s) }}>
+                <span className="absolute left-1 top-1 text-[10px] text-neutral-400">{fmtTC(s, fps)}</span>
               </div>
             ))}
           </div>
 
           {rows.map((tr) => (
-            <div key={tr} className="relative h-10 border-b border-neutral-800/60">
+            <div key={tr} className="relative h-10 border-b border-neutral-100">
               {clips
                 .filter((c) => c.track === tr)
-                .map((c, i) => (
+                .map((c) => (
                   <div
-                    key={i}
-                    className={`absolute top-1 bottom-1 rounded-md border flex items-center gap-1.5 px-2 text-xs text-white overflow-hidden ${CLIP_BAR[c.type]}`}
+                    key={c.index}
+                    onPointerDown={(e) => {
+                      e.stopPropagation(); // select, don't scrub
+                      onSelect(c.index);
+                    }}
+                    className={`absolute top-1 bottom-1 rounded-md flex items-center gap-1.5 px-2 text-xs text-white overflow-hidden shadow-sm cursor-pointer ${CLIP_BAR[c.type]} ${
+                      c.index === selected ? `ring-2 ring-offset-1 ${CLIP_RING[c.type]}` : ""
+                    }`}
                     style={{ left: pct(c.start), width: pct(c.duration) }}
                     title={`${c.label} · ${c.start}s–${c.start + c.duration}s`}
                   >
@@ -484,8 +657,8 @@ function Timeline({
             </div>
           ))}
 
-          <div className="absolute top-0 bottom-0 w-px bg-sky-400 pointer-events-none" style={{ left: pct(time) }}>
-            <div className="absolute -top-0.5 -translate-x-1/2 w-3 h-3 rounded-sm bg-sky-400" />
+          <div className="absolute top-0 bottom-0 w-px bg-indigo-500 pointer-events-none z-10" style={{ left: pct(time) }}>
+            <div className="absolute -top-0.5 -translate-x-1/2 w-3 h-3 rounded-sm bg-indigo-500" />
           </div>
         </div>
       </div>
@@ -498,6 +671,134 @@ function Timeline({
       )}
     </div>
   );
+}
+
+// ── inspector ────────────────────────────────────────────────────────
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-xs text-neutral-500 mb-1">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const inputCls = "w-full px-2 py-1.5 text-sm rounded-md border border-neutral-200 bg-white";
+
+/** Right-side quick editor for the selected clip — fields depend on the clip type. */
+function Inspector({
+  clip,
+  onChange,
+  onClose,
+}: {
+  clip: Clip;
+  onChange: (patch: ClipPatch) => void;
+  onClose: () => void;
+}) {
+  const typeLabel = clip.type[0].toUpperCase() + clip.type.slice(1);
+  const num = (v: string) => (v === "" ? 0 : parseFloat(v) || 0);
+
+  return (
+    <div className="overflow-hidden">
+      <div className="flex items-center gap-2 px-3 h-10 border-b border-neutral-200">
+        <span className="text-neutral-600">{clipIcon(clip.type)}</span>
+        <span className="text-sm font-medium">{typeLabel}</span>
+        <span className="text-xs text-neutral-400">· Track {clip.track + 1}</span>
+        <button onClick={onClose} className="ml-auto text-neutral-400 hover:text-neutral-700 text-lg leading-none">
+          ×
+        </button>
+      </div>
+
+      <div className="p-3 space-y-3">
+        {clip.type === "text" && (
+          <>
+            <Field label="Text">
+              <input className={inputCls} value={clip.text} onChange={(e) => onChange({ text: e.target.value })} />
+            </Field>
+            <Field label="Color">
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  className="w-8 h-8 rounded border border-neutral-200 bg-white p-0.5"
+                  value={toHex(clip.color)}
+                  onChange={(e) => onChange({ color: e.target.value })}
+                />
+                <input
+                  className={inputCls}
+                  value={clip.color}
+                  onChange={(e) => onChange({ color: e.target.value })}
+                  placeholder="#ffffff"
+                />
+              </div>
+            </Field>
+            <Field label="Font size">
+              <input
+                className={inputCls}
+                value={clip.fontSize}
+                onChange={(e) => onChange({ fontSize: e.target.value })}
+                placeholder="96px"
+              />
+            </Field>
+          </>
+        )}
+
+        {(clip.type === "image" || clip.type === "video" || clip.type === "audio") && (
+          <Field label="Source">
+            <input
+              className={inputCls}
+              value={clip.src}
+              onChange={(e) => onChange({ src: e.target.value })}
+              placeholder="assets/your-file"
+            />
+          </Field>
+        )}
+
+        <div className="pt-1 border-t border-neutral-100" />
+
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="Start (s)">
+            <input
+              type="number"
+              step="0.1"
+              className={inputCls}
+              value={clip.start}
+              onChange={(e) => onChange({ start: num(e.target.value) })}
+            />
+          </Field>
+          <Field label="Dur (s)">
+            <input
+              type="number"
+              step="0.1"
+              className={inputCls}
+              value={clip.duration}
+              onChange={(e) => onChange({ duration: num(e.target.value) })}
+            />
+          </Field>
+          <Field label="Track">
+            <input
+              type="number"
+              min="0"
+              className={inputCls}
+              value={clip.track}
+              onChange={(e) => onChange({ track: Math.max(0, Math.round(num(e.target.value))) })}
+            />
+          </Field>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Best-effort convert a CSS color (hex or rgb) to #rrggbb for the color input. */
+function toHex(color: string): string {
+  if (/^#[0-9a-f]{6}$/i.test(color)) return color;
+  const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (m) {
+    const h = (n: string) => Number(n).toString(16).padStart(2, "0");
+    return `#${h(m[1])}${h(m[2])}${h(m[3])}`;
+  }
+  return "#ffffff";
 }
 
 // ── media ────────────────────────────────────────────────────────────
