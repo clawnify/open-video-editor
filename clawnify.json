@@ -1,0 +1,34 @@
+{
+  "$schema": "https://app.clawnify.com/schema/v1/clawnify.json",
+  "version": 1,
+  "name": "Open Video Editor",
+  "description": "Open-source, agent-friendly video editor. Compose videos as plain HTML on a timeline, drop in your own media (logos, product demos), preview with a scrubbable playhead, and render to MP4. Powered by HyperFrames.",
+  "icon": "icon.svg",
+  "tags": ["video", "editor", "timeline", "html", "animation"],
+
+  "app": {
+    "framework": "react+hono",
+    "database": true,
+    "storage": true
+  },
+
+  "deploy": {
+    "title": "Deploy your Open Video Editor",
+    "subtitle": "Compose videos as HTML on a timeline, drop in your logo and product demos, and render to MP4.",
+    "prompts": [
+      {
+        "key": "brand_name",
+        "label": "Brand or company name",
+        "placeholder": "e.g. Northwind",
+        "required": true
+      },
+      {
+        "key": "use_case",
+        "label": "What kind of videos will you make?",
+        "placeholder": "e.g. Product launch clips, feature demos, social ads"
+      }
+    ]
+  },
+
+  "agent": "agent.md"
+}
