@@ -4,6 +4,8 @@ An open-source, **agent-friendly video editor**. Compose videos as plain **HTML 
 
 Built on **[HyperFrames](https://github.com/heygen-com/hyperframes)** (HTML → MP4, Apache-2.0) — so there's no proprietary timeline format and no per-seat license. A composition is just HTML: humans can tweak it, and AI agents can author it end to end.
 
+<img width="1728" height="992" alt="Image" src="https://github.com/user-attachments/assets/a537ccde-d363-475e-8ca1-284d8c8a4552" />
+
 ## Why
 
 Most programmatic video tools lock you into a component framework or a paid license. Here a video is **HTML you already know** — elements positioned on tracks with simple `data-*` timing attributes, animated with GSAP/CSS/Lottie/Three.js. That makes it trivial for an agent to generate, and trivial for a person to read and adjust.
